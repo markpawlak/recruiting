@@ -1,0 +1,120 @@
+﻿import streamlit as st
+import pandas as pd
+import os
+
+
+# --- App Configuration ---
+st.set_page_config(
+    page_title="Wendy's Recruit Tracker", 
+    page_icon="🍔",
+    layout="centered"
+)
+
+
+# --- Data Cleaning Utilities ---
+def clean_currency(value):
+    if isinstance(value, str):
+        return pd.to_numeric(value.replace('$', '').replace(',', ''), errors='coerce')
+    return value
+
+
+def clean_percent(value):
+    if isinstance(value, str):
+        return pd.to_numeric(value.replace('%', '').replace(',', ''), errors='coerce') / 100
+    return value
+
+
+# --- Data Loading ---
+@st.cache_data
+def load_data():
+    files = [
+        'Courted Agent Search Export (Apr 01 2026) (1).csv', 
+        'Courted Agent Search Export (Apr 01 2026).csv'
+    ]
+    
+    dataframes = []
+    for f in files:
+        if os.path.exists(f):
+            dataframes.append(pd.read_csv(f))
+    
+    if not dataframes:
+        return pd.DataFrame() # Return empty if no files found
+
+
+    df = pd.concat(dataframes).drop_duplicates()
+    
+    # Standardizing Names
+    df['First Name'] = df['First Name'].fillna('')
+    df['Last Name'] = df['Last Name'].fillna('')
+    df['Full Name'] = (df['First Name'] + " " + df['Last Name']).str.strip()
+    
+    # Robust numeric cleaning
+    df['LTM Sales Volume'] = df['LTM Sales Volume'].apply(clean_currency)
+    df['Units'] = pd.to_numeric(df['Units'], errors='coerce')
+    
+    # Calculate Previous Year Stats
+    # Using vectorized operations (much faster than .apply)
+    growth_rate = df['LTM Sales Volume % Growth'].apply(clean_percent)
+    df['Prev Vol'] = df['LTM Sales Volume'] / (1 + growth_rate)
+    
+    return df
+
+
+df = load_data()
+
+
+# --- Error Handling for Missing Data ---
+if df.empty:
+    st.error("⚠️ No data files found. Please upload the CSV files to the project folder.")
+    st.stop()
+
+
+# --- Sidebar Filters (Great for Mobile) ---
+st.sidebar.header("Filter Recruits")
+selected_city = st.sidebar.multiselect("Filter by City", options=sorted(df['Office City'].dropna().unique()))
+min_vol = st.sidebar.number_input("Min LTM Volume ($)", value=0, step=100000)
+
+
+# --- UI Header ---
+st.title("📱 Recruit Search")
+st.caption("Wendy's Real Estate Talent Pipeline")
+
+
+# --- Search Interface ---
+search_query = st.text_input("🔍 Search by Name:", placeholder="Start typing name...")
+
+
+# Filtering Logic
+filtered_df = df.copy()
+if search_query:
+    filtered_df = filtered_df[filtered_df['Full Name'].str.contains(search_query, case=False, na=False)]
+if selected_city:
+    filtered_df = filtered_df[filtered_df['Office City'].isin(selected_city)]
+filtered_df = filtered_df[filtered_df['LTM Sales Volume'] >= min_vol]
+
+
+# --- Display Results ---
+if not filtered_df.empty:
+    st.write(f"Found {len(filtered_df)} agents:")
+    
+    for _, row in filtered_df.iterrows():
+        with st.expander(f"👤 {row['Full Name']} - {row['Current Office']}"):
+            # Metrics Grid
+            m1, m2 = st.columns(2)
+            m1.metric("LTM Volume", f"${row['LTM Sales Volume']:,.0f}")
+            m2.metric("LTM Units", f"{int(row['Units']) if not pd.isna(row['Units']) else 0}")
+            
+            m3, m4 = st.columns(2)
+            m3.metric("Prev Year Vol", f"${row['Prev Vol']:,.0f}")
+            m4.metric("Growth", f"{row['LTM Sales Volume % Growth']}")
+            
+            st.markdown(f"**📍 Location:** {row['Most Transacted City']} | {row['Office City']}")
+            
+            # Action Buttons
+            c1, c2 = st.columns(2)
+            with c1:
+                st.link_button(f"📞 Call {row['First Name']}", f"tel:{row['Phone']}", use_container_width=True)
+            with c2:
+                st.link_button(f"📧 Email {row['First Name']}", f"mailto:{row['Email']}", use_container_width=True)
+else:
+    st.info("No agents match your search criteria.")
