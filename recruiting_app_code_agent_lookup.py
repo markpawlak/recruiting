@@ -1,120 +1,111 @@
-﻿import streamlit as st
+import streamlit as st
 import pandas as pd
-import os
 
-
-# --- App Configuration ---
+# 1. App Configuration - Optimized for Mobile
 st.set_page_config(
-    page_title="Wendy's Recruit Tracker", 
-    page_icon="🍔",
+    page_title="Wendy's Recruit Tracker",
+    page_icon="📱",
     layout="centered"
 )
 
+# Custom CSS for high-contrast mobile readability
+st.markdown("""
+    <style>
+    .agent-card {
+        background-color: #f9f9f9;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #ddd;
+        margin-bottom: 20px;
+    }
+    .metric-label { font-size: 14px; color: #555; }
+    .metric-value { font-size: 20px; font-weight: bold; color: #000; }
+    </style>
+    """, unsafe_index=True)
 
-# --- Data Cleaning Utilities ---
-def clean_currency(value):
-    if isinstance(value, str):
-        return pd.to_numeric(value.replace('$', '').replace(',', ''), errors='coerce')
-    return value
-
-
-def clean_percent(value):
-    if isinstance(value, str):
-        return pd.to_numeric(value.replace('%', '').replace(',', ''), errors='coerce') / 100
-    return value
-
-
-# --- Data Loading ---
+# 2. Data Loading Function
 @st.cache_data
 def load_data():
-    files = [
-        'Courted Agent Search Export (Apr 01 2026) (1).csv', 
-        'Courted Agent Search Export (Apr 01 2026).csv'
-    ]
+    # Loading the combined file created in the previous step
+    df = pd.read_csv('Combined_Recruits.csv')
     
-    dataframes = []
-    for f in files:
-        if os.path.exists(f):
-            dataframes.append(pd.read_csv(f))
-    
-    if not dataframes:
-        return pd.DataFrame() # Return empty if no files found
-
-
-    df = pd.concat(dataframes).drop_duplicates()
-    
-    # Standardizing Names
-    df['First Name'] = df['First Name'].fillna('')
-    df['Last Name'] = df['Last Name'].fillna('')
-    df['Full Name'] = (df['First Name'] + " " + df['Last Name']).str.strip()
-    
-    # Robust numeric cleaning
-    df['LTM Sales Volume'] = df['LTM Sales Volume'].apply(clean_currency)
+    # Ensure numeric types for calculations
+    df['LTM Sales Volume'] = pd.to_numeric(df['LTM Sales Volume'], errors='coerce')
     df['Units'] = pd.to_numeric(df['Units'], errors='coerce')
     
-    # Calculate Previous Year Stats
-    # Using vectorized operations (much faster than .apply)
-    growth_rate = df['LTM Sales Volume % Growth'].apply(clean_percent)
-    df['Prev Vol'] = df['LTM Sales Volume'] / (1 + growth_rate)
+    # Function to back-calculate Previous Year Volume from the Growth % string
+    def calculate_prev_year_volume(current_vol, growth_str):
+        try:
+            if pd.isna(growth_str) or growth_str == "0%":
+                return current_vol
+            # Convert string like "445%" or "1,374%" to float 4.45 or 13.74
+            clean_growth = float(str(growth_str).replace('%', '').replace(',', '')) / 100
+            # Formula: Current / (1 + Growth Rate)
+            return current_vol / (1 + clean_growth)
+        except:
+            return 0
+
+    # Apply calculations and create search field
+    df['Prev Year Vol'] = df.apply(lambda x: calculate_prev_year_volume(x['LTM Sales Volume'], x['LTM Sales Volume % Growth']), axis=1)
+    df['Full Name'] = df['First Name'].fillna('') + " " + df['Last Name'].fillna('')
     
     return df
 
-
-df = load_data()
-
-
-# --- Error Handling for Missing Data ---
-if df.empty:
-    st.error("⚠️ No data files found. Please upload the CSV files to the project folder.")
+# Initialize data
+try:
+    df = load_data()
+except Exception as e:
+    st.error(f"Error loading CSV: {e}. Please ensure 'Combined_Recruits.csv' is in the repository.")
     st.stop()
 
+# 3. Mobile Header UI
+st.title("📱 Recruit Directory")
+st.write("Enter an agent's name to view their production profile.")
 
-# --- Sidebar Filters (Great for Mobile) ---
-st.sidebar.header("Filter Recruits")
-selected_city = st.sidebar.multiselect("Filter by City", options=sorted(df['Office City'].dropna().unique()))
-min_vol = st.sidebar.number_input("Min LTM Volume ($)", value=0, step=100000)
+# 4. Search Bar
+search_input = st.text_input("Search Agents", placeholder="Start typing a name...")
 
-
-# --- UI Header ---
-st.title("📱 Recruit Search")
-st.caption("Wendy's Real Estate Talent Pipeline")
-
-
-# --- Search Interface ---
-search_query = st.text_input("🔍 Search by Name:", placeholder="Start typing name...")
-
-
-# Filtering Logic
-filtered_df = df.copy()
-if search_query:
-    filtered_df = filtered_df[filtered_df['Full Name'].str.contains(search_query, case=False, na=False)]
-if selected_city:
-    filtered_df = filtered_df[filtered_df['Office City'].isin(selected_city)]
-filtered_df = filtered_df[filtered_df['LTM Sales Volume'] >= min_vol]
-
-
-# --- Display Results ---
-if not filtered_df.empty:
-    st.write(f"Found {len(filtered_df)} agents:")
+# 5. Result Display Logic
+if search_input:
+    # Search across the "Full Name" column 
+    results = df[df['Full Name'].str.contains(search_input, case=False, na=False)]
     
-    for _, row in filtered_df.iterrows():
-        with st.expander(f"👤 {row['Full Name']} - {row['Current Office']}"):
-            # Metrics Grid
-            m1, m2 = st.columns(2)
-            m1.metric("LTM Volume", f"${row['LTM Sales Volume']:,.0f}")
-            m2.metric("LTM Units", f"{int(row['Units']) if not pd.isna(row['Units']) else 0}")
-            
-            m3, m4 = st.columns(2)
-            m3.metric("Prev Year Vol", f"${row['Prev Vol']:,.0f}")
-            m4.metric("Growth", f"{row['LTM Sales Volume % Growth']}")
-            
-            st.markdown(f"**📍 Location:** {row['Most Transacted City']} | {row['Office City']}")
-            
-            # Action Buttons
-            c1, c2 = st.columns(2)
-            with c1:
-                st.link_button(f"📞 Call {row['First Name']}", f"tel:{row['Phone']}", use_container_width=True)
-            with c2:
-                st.link_button(f"📧 Email {row['First Name']}", f"mailto:{row['Email']}", use_container_width=True)
+    if not results.empty:
+        st.success(f"Found {len(results)} agent(s)")
+        
+        for index, row in results.iterrows():
+            with st.container():
+                # Agent Header [cite: 1]
+                st.subheader(f"👤 {row['Full Name']}")
+                
+                # Office Info [cite: 1, 19]
+                st.markdown(f"**Office:** {row['Current Office']} — *{row['Office City']}*")
+                
+                # Geographic Info [cite: 13]
+                st.markdown(f"**Primary Market:** {row['Most Transacted City']}")
+                
+                # Performance Metrics [cite: 11, 17, 12]
+                m1, m2 = st.columns(2)
+                with m1:
+                    st.metric("LTM Sales Volume", f"${row['LTM Sales Volume']:,.0f}")
+                    st.metric("Prev. Year Volume", f"${row['Prev Year Vol']:,.0f}")
+                
+                with m2:
+                    st.metric("LTM Units", f"{row['Units']}")
+                    st.metric("Volume Growth", f"{row['LTM Sales Volume % Growth']}")
+
+                # Interactive Contact Links 
+                c1, c2 = st.columns(2)
+                if pd.notna(row['Phone']) and str(row['Phone']).lower() != 'none':
+                    c1.markdown(f"📞 [**Call Agent**](tel:{row['Phone']})")
+                
+                if pd.notna(row['Email']):
+                    c2.markdown(f"📧 [**Email Agent**](mailto:{row['Email']})")
+                
+                st.divider()
+    else:
+        st.warning("No recruits found matching that name.")
 else:
-    st.info("No agents match your search criteria.")
+    # Display quick stats for Wendy when the search is empty
+    st.info("💡 Pro-tip: You can search by first or last name.")
+    st.write(f"Total Database Size: {len(df)} Recruits")
